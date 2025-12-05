@@ -265,25 +265,32 @@ def get_purchase_dates(start_date: datetime, end_date: datetime, frequency: str,
             current_date += timedelta(days=1)
     
     elif frequency == "Mensual":
-        while current_date <= end_date:
+        month_date = current_date
+        while month_date <= end_date:
             # Manejo de meses con menos días
             if day_of_month == 31:
                 # Último día del mes
-                next_month = current_date.replace(day=1) + timedelta(days=32)
-                last_day = (next_month.replace(day=1) - timedelta(days=1)).day
+                next_month = (month_date.replace(day=1) + timedelta(days=32)).replace(day=1)
+                last_day = (next_month - timedelta(days=1)).day
                 target_day = min(day_of_month, last_day)
             else:
                 target_day = day_of_month
             
             try:
-                purchase_date = current_date.replace(day=target_day)
-                if purchase_date <= end_date:
+                purchase_date = month_date.replace(day=target_day)
+                if current_date <= purchase_date <= end_date:
                     dates.append(purchase_date)
-                current_date = purchase_date + timedelta(days=1)
+                # Avanzar al siguiente mes
+                if month_date.month == 12:
+                    month_date = month_date.replace(year=month_date.year + 1, month=1)
+                else:
+                    month_date = month_date.replace(month=month_date.month + 1)
             except ValueError:
-                # Día inválido para este mes
-                next_month = current_date.replace(day=1) + timedelta(days=32)
-                current_date = next_month
+                # Día inválido para este mes, avanzar
+                if month_date.month == 12:
+                    month_date = month_date.replace(year=month_date.year + 1, month=1)
+                else:
+                    month_date = month_date.replace(month=month_date.month + 1)
     
     return sorted(list(set(dates)))
 
@@ -297,18 +304,40 @@ def calculate_dca(start_date: datetime, end_date: datetime, amount_usd: float,
     
     purchase_dates = get_purchase_dates(start_date, end_date, frequency, day_of_week, day_of_month)
     
+    if not purchase_dates:
+        return 0, 0, []
+    
     total_btc = 0
     total_invested = 0
     purchases = []
     
-    for date in purchase_dates:
-        if date in bitcoin_prices:
-            price = bitcoin_prices[date]
+    # Obtener fechas disponibles en orden
+    bitcoin_dates = sorted(bitcoin_prices.keys())
+    
+    for target_date in purchase_dates:
+        # Buscar precio en la fecha exacta o más cercana anterior
+        price = None
+        
+        if target_date in bitcoin_prices:
+            price = bitcoin_prices[target_date]
+        else:
+            # Buscar el precio más cercano anterior
+            for btc_date in reversed(bitcoin_dates):
+                if btc_date <= target_date:
+                    price = bitcoin_prices[btc_date]
+                    break
+        
+        # Si no hay precio anterior, usar el primero disponible
+        if price is None and bitcoin_dates:
+            price = bitcoin_prices[bitcoin_dates[0]]
+        
+        # Si encontramos un precio, registrar la compra
+        if price is not None and price > 0:
             btc_bought = amount_usd / price
             total_btc += btc_bought
             total_invested += amount_usd
             purchases.append({
-                'date': date,
+                'date': target_date,
                 'price': price,
                 'amount_usd': amount_usd,
                 'btc_bought': btc_bought
@@ -461,8 +490,8 @@ if calculate_button:
             if bitcoin_prices:
                 # Calcular DCA para ambos escenarios
                 btc_accumulated, total_invested, purchases = calculate_dca(
-                    datetime.combine(start_date, datetime.min.time()),
-                    datetime.combine(future_date, datetime.min.time()),
+                    start_date,
+                    future_date,
                     amount_usd,
                     frequency,
                     day_of_week_num if frequency == "Semanal" else None,
@@ -470,7 +499,7 @@ if calculate_button:
                     bitcoin_prices
                 )
                 
-                if btc_accumulated > 0.0001 and total_invested > 0:
+                if btc_accumulated > 0.0001 and total_invested > 0 and len(purchases) > 0:
                     # Cálculos para Escenario A (La Trampa)
                     gross_value_a = btc_accumulated * future_price
                     taxes = gross_value_a * 0.25  # 25% de impuestos
@@ -630,7 +659,7 @@ if calculate_button:
                         else:
                             st.error("❌ Por favor, ingresa un email válido")
                 else:
-                    st.error("❌ No se encontraron suficientes datos de compra para el período seleccionado. Intenta con un período más reciente o una cantidad diferente.")
+                    st.error(f"❌ No se encontraron suficientes datos de compra. Se encontraron {len(purchases)} compras. Intenta con un período más reciente o una cantidad diferente.")
             else:
                 st.error("❌ No se pudieron obtener los datos históricos de Bitcoin. Por favor, intenta más tarde o con un período diferente.")
 
