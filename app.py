@@ -168,20 +168,70 @@ st.markdown("""
 # Funciones de utilidad
 @st.cache_data
 def get_bitcoin_prices(start_date: datetime, end_date: datetime) -> dict:
-    """Obtiene histórico de precios de Bitcoin usando yfinance"""
+    """
+    Obtiene histórico de precios de Bitcoin usando yfinance.
+    Maneja automáticamente diferentes formatos de datos que yfinance puede devolver.
+    """
     try:
         # Descargar datos de Bitcoin usando yfinance
         btc_data = yf.download('BTC-USD', start=start_date, end=end_date, progress=False)
         
+        if btc_data.empty:
+            st.error("❌ No se encontraron datos de Bitcoin para el período seleccionado. Intenta con un período más reciente.")
+            return {}
+        
         # Convertir a diccionario {fecha: precio_cierre}
         prices = {}
-        for index, row in btc_data.iterrows():
-            date = index.date()
-            prices[date] = row['Close']
+        
+        # Manejo robusto de diferentes formatos de yfinance
+        try:
+            # Intento 1: Acceso directo a columna 'Close' (formato simple)
+            if 'Close' in btc_data.columns:
+                for index, row in btc_data.iterrows():
+                    date = index.date()
+                    close_price = row['Close']
+                    if pd.notna(close_price) and close_price > 0:
+                        prices[date] = float(close_price)
+            else:
+                # Intento 2: MultiIndex (formato reciente de yfinance)
+                for index, row in btc_data.iterrows():
+                    date = index.date()
+                    
+                    # Busca cualquier columna que contenga 'Close'
+                    close_value = None
+                    
+                    # Prueba con MultiIndex
+                    if isinstance(btc_data.columns, pd.MultiIndex):
+                        for col in btc_data.columns:
+                            if 'Close' in str(col):
+                                try:
+                                    close_value = btc_data.loc[index, col]
+                                    break
+                                except:
+                                    continue
+                    
+                    # Si no encontró en MultiIndex, prueba con columnas simples
+                    if close_value is None:
+                        close_cols = [col for col in btc_data.columns if 'Close' in str(col)]
+                        if close_cols:
+                            close_value = btc_data.loc[index, close_cols[0]]
+                    
+                    # Valida y guarda el precio
+                    if close_value is not None and pd.notna(close_value) and float(close_value) > 0:
+                        prices[date] = float(close_value)
+        
+        except Exception as e:
+            st.error(f"❌ Error al procesar datos de Bitcoin: {str(e)}")
+            return {}
+        
+        if not prices:
+            st.error("❌ No se pudieron extraer precios válidos de los datos descargados.")
+            return {}
         
         return prices
+        
     except Exception as e:
-        st.error(f"Error al obtener precios de Bitcoin: {str(e)}")
+        st.error(f"❌ Error al obtener precios de Bitcoin: {str(e)}")
         return {}
 
 def get_purchase_dates(start_date: datetime, end_date: datetime, frequency: str, 
@@ -387,188 +437,189 @@ with col2:
 calculate_button = st.button("🚀 Simular Mi Futuro Inconfiscable", use_container_width=True)
 
 if calculate_button:
-    with st.spinner("Obteniendo datos históricos de Bitcoin..."):
-        # Obtener precios históricos usando yfinance
-        bitcoin_prices = get_bitcoin_prices(
-            start_date,
-            datetime.combine(future_date, datetime.min.time())
-        )
-        
-        if bitcoin_prices:
-            # Calcular DCA para ambos escenarios
-            btc_accumulated, total_invested, purchases = calculate_dca(
-                datetime.combine(start_date, datetime.min.time()),
-                datetime.combine(future_date, datetime.min.time()),
-                amount_usd,
-                frequency,
-                day_of_week_num if frequency == "Semanal" else None,
-                day_of_month if frequency == "Mensual" else None,
-                bitcoin_prices
-            )
+    # Validar fechas
+    if start_date >= future_date:
+        st.error("❌ La fecha de inicio debe ser anterior a la fecha futura.")
+    else:
+        with st.spinner("⏳ Obteniendo datos históricos de Bitcoin desde Yahoo Finance..."):
+            # Obtener precios históricos usando yfinance
+            bitcoin_prices = get_bitcoin_prices(start_date, future_date)
             
-            if btc_accumulated > 0:
-                # Cálculos para Escenario A (La Trampa)
-                gross_value_a = btc_accumulated * future_price
-                taxes = gross_value_a * 0.25  # 25% de impuestos
-                net_value_a = gross_value_a - taxes
-                roi_a = ((net_value_a - total_invested) / total_invested * 100) if total_invested > 0 else 0
-                years = (future_date - start_date).days / 365.25
-                cagr_a = calculate_cagr(total_invested, net_value_a, years)
+            if bitcoin_prices:
+                # Calcular DCA para ambos escenarios
+                btc_accumulated, total_invested, purchases = calculate_dca(
+                    datetime.combine(start_date, datetime.min.time()),
+                    datetime.combine(future_date, datetime.min.time()),
+                    amount_usd,
+                    frequency,
+                    day_of_week_num if frequency == "Semanal" else None,
+                    day_of_month if frequency == "Mensual" else None,
+                    bitcoin_prices
+                )
                 
-                # Cálculos para Escenario B (Lo Inconfiscable)
-                gross_value_b = btc_accumulated * future_price
-                net_value_b = gross_value_b  # Sin impuestos
-                roi_b = ((net_value_b - total_invested) / total_invested * 100) if total_invested > 0 else 0
-                cagr_b = calculate_cagr(total_invested, net_value_b, years)
-                
-                # Mostrar resultados
-                st.markdown("## 📊 Resultados Comparativos")
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.markdown("""
-                        <div class="scenario-card scenario-a">
-                            <h3>🔴 Escenario A: La Trampa</h3>
-                            <p style="color: rgba(255, 255, 255, 0.8); font-size: 0.9em;">
-                                Compra tradicional a través de exchange centralizado. 
-                                El Estado controla tu información. Atrapado en el sistema.
+                if btc_accumulated > 0 and total_invested > 0:
+                    # Cálculos para Escenario A (La Trampa)
+                    gross_value_a = btc_accumulated * future_price
+                    taxes = gross_value_a * 0.25  # 25% de impuestos
+                    net_value_a = gross_value_a - taxes
+                    roi_a = ((net_value_a - total_invested) / total_invested * 100) if total_invested > 0 else 0
+                    years = (future_date - start_date).days / 365.25
+                    cagr_a = calculate_cagr(total_invested, net_value_a, years)
+                    
+                    # Cálculos para Escenario B (Lo Inconfiscable)
+                    gross_value_b = btc_accumulated * future_price
+                    net_value_b = gross_value_b  # Sin impuestos
+                    roi_b = ((net_value_b - total_invested) / total_invested * 100) if total_invested > 0 else 0
+                    cagr_b = calculate_cagr(total_invested, net_value_b, years)
+                    
+                    # Mostrar resultados
+                    st.markdown("## 📊 Resultados Comparativos")
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.markdown("""
+                            <div class="scenario-card scenario-a">
+                                <h3>🔴 Escenario A: La Trampa</h3>
+                                <p style="color: rgba(255, 255, 255, 0.8); font-size: 0.9em;">
+                                    Compra tradicional a través de exchange centralizado. 
+                                    El Estado controla tu información. Atrapado en el sistema.
+                                </p>
+                            </div>
+                        """, unsafe_allow_html=True)
+                        
+                        st.metric("Inversión Total", f"${total_invested:,.2f}")
+                        st.metric("Bitcoin Acumulado", f"{btc_accumulated:.4f} BTC")
+                        st.metric("Valor Bruto (al precio futuro)", f"${gross_value_a:,.2f}")
+                        st.metric("Impuestos (25%)", f"-${taxes:,.2f}", delta=None)
+                        st.metric("Valor Neto", f"${net_value_a:,.2f}")
+                        st.metric("Rentabilidad", f"{roi_a:.2f}%")
+                        st.metric("CAGR", f"{cagr_a:.2f}%")
+                    
+                    with col2:
+                        st.markdown("""
+                            <div class="scenario-card scenario-b">
+                                <h3>🟢 Escenario B: Lo Inconfiscable</h3>
+                                <p style="color: rgba(255, 255, 255, 0.8); font-size: 0.9em;">
+                                    Compra anónima, descentralizada y autocustodiada. 
+                                    Nadie sabe cuánto tienes. Verdadera libertad financiera.
+                                </p>
+                            </div>
+                        """, unsafe_allow_html=True)
+                        
+                        st.metric("Inversión Total", f"${total_invested:,.2f}")
+                        st.metric("Bitcoin Acumulado", f"{btc_accumulated:.4f} BTC")
+                        st.metric("Valor Bruto (al precio futuro)", f"${gross_value_b:,.2f}")
+                        st.metric("Impuestos", "$0 (Sin impacto fiscal)")
+                        st.metric("Valor Neto", f"${net_value_b:,.2f}")
+                        st.metric("Rentabilidad", f"{roi_b:.2f}%")
+                        st.metric("CAGR", f"{cagr_b:.2f}%")
+                    
+                    # Diferencia
+                    st.markdown("---")
+                    difference = net_value_b - net_value_a
+                    st.markdown(f"""
+                        <div style="background-color: rgba(45, 106, 79, 0.2); padding: 20px; border-radius: 10px; border-left: 5px solid #2D6A4F;">
+                            <h3>💰 Tu Ventaja Por Ser Inconfiscable</h3>
+                            <p style="font-size: 1.2em; color: #06A77D; font-weight: bold;">
+                                ${difference:,.2f} más en tu bolsillo
+                            </p>
+                            <p style="color: rgba(255, 255, 255, 0.8);">
+                                Esto es lo que ahorras en impuestos y lo que ganas por no estar atrapado en el sistema.
                             </p>
                         </div>
                     """, unsafe_allow_html=True)
                     
-                    st.metric("Inversión Total", f"${total_invested:,.2f}")
-                    st.metric("Bitcoin Acumulado", f"{btc_accumulated:.4f} BTC")
-                    st.metric("Valor Bruto (al precio futuro)", f"${gross_value_a:,.2f}")
-                    st.metric("Impuestos (25%)", f"-${taxes:,.2f}", delta=None)
-                    st.metric("Valor Neto", f"${net_value_a:,.2f}")
-                    st.metric("Rentabilidad", f"{roi_a:.2f}%")
-                    st.metric("CAGR", f"{cagr_a:.2f}%")
-                
-                with col2:
+                    # Tabla detallada de compras
+                    with st.expander("📋 Ver detalle de todas las compras"):
+                        df_purchases = pd.DataFrame(purchases)
+                        df_purchases['date'] = df_purchases['date'].astype(str)
+                        df_purchases.columns = ['Fecha', 'Precio BTC (USD)', 'Inversión (USD)', 'BTC Comprado']
+                        st.dataframe(df_purchases, use_container_width=True)
+                    
+                    # Informe comparativo
+                    st.markdown("## 🎯 Opciones Como Ser Inconfiscable")
+                    
                     st.markdown("""
-                        <div class="scenario-card scenario-b">
-                            <h3>🟢 Escenario B: Lo Inconfiscable</h3>
-                            <p style="color: rgba(255, 255, 255, 0.8); font-size: 0.9em;">
-                                Compra anónima, descentralizada y autocustodiada. 
-                                Nadie sabe cuánto tienes. Verdadera libertad financiera.
+                        ### Vivir de tus Bitcoin sin venderlos
+                        
+                        Una vez que eres inconfiscable, tienes opciones que los atrapados en el sistema no tienen:
+                        
+                        **Préstamo Pignorado**: Puedes usar tus Bitcoin como colateral para obtener un préstamo en USD o stablecoins, 
+                        sin necesidad de venderlos. Esto significa:
+                        
+                        - **Mantener tu exposición a Bitcoin**: Tus BTC siguen creciendo mientras usas el dinero del préstamo
+                        - **Vivir del préstamo**: Usa los fondos para tus gastos diarios
+                        - **Pagar intereses bajos**: Plataformas DeFi ofrecen tasas mucho menores que bancos tradicionales
+                        - **Sin confiscación**: Nadie puede quitarte tus Bitcoin porque están en tu autocustodia
+                        - **Privacidad total**: Tus transacciones no están vinculadas a tu identidad
+                        
+                        ### Comparación con el Escenario A (La Trampa)
+                        
+                        Si estuvieras atrapado en el sistema tradicional:
+                        
+                        - **Tendrías que vender** para acceder a tu dinero (pagando impuestos sobre ganancias)
+                        - **El Estado sabría** exactamente cuándo y cuánto vendiste
+                        - **Estarías vigilado** en cada transacción
+                        - **No tendrías privacidad** financiera real
+                        - **Tus fondos estarían en riesgo** de confiscación
+                        
+                        ### La Libertad Financiera Real
+                        
+                        Ser inconfiscable significa:
+                        
+                        - **Control total** sobre tus activos
+                        - **Privacidad financiera** completa
+                        - **Libertad** para hacer lo que quieras con tu dinero
+                        - **Protección** contra la confiscación y el control estatal
+                        - **Oportunidades** que el sistema tradicional nunca te dará
+                    """)
+                    
+                    # Formulario de registro
+                    st.markdown("---")
+                    st.markdown("""
+                        <div style="background: linear-gradient(135deg, rgba(45, 106, 79, 0.2), rgba(6, 168, 125, 0.2)); padding: 40px; border-radius: 10px; border: 2px solid #06A77D;">
+                            <h2 style="color: #06A77D; text-align: center;">🔐 Comienza Tu Viaje Hacia Lo Inconfiscable</h2>
+                            <p style="text-align: center; color: rgba(255, 255, 255, 0.9); font-size: 1.1em;">
+                                Recibe una secuencia de correos explicándote los 4 pasos para hacerte verdaderamente inconfiscable.
                             </p>
                         </div>
                     """, unsafe_allow_html=True)
                     
-                    st.metric("Inversión Total", f"${total_invested:,.2f}")
-                    st.metric("Bitcoin Acumulado", f"{btc_accumulated:.4f} BTC")
-                    st.metric("Valor Bruto (al precio futuro)", f"${gross_value_b:,.2f}")
-                    st.metric("Impuestos", "$0 (Sin impacto fiscal)")
-                    st.metric("Valor Neto", f"${net_value_b:,.2f}")
-                    st.metric("Rentabilidad", f"{roi_b:.2f}%")
-                    st.metric("CAGR", f"{cagr_b:.2f}%")
-                
-                # Diferencia
-                st.markdown("---")
-                difference = net_value_b - net_value_a
-                st.markdown(f"""
-                    <div style="background-color: rgba(45, 106, 79, 0.2); padding: 20px; border-radius: 10px; border-left: 5px solid #2D6A4F;">
-                        <h3>💰 Tu Ventaja Por Ser Inconfiscable</h3>
-                        <p style="font-size: 1.2em; color: #06A77D; font-weight: bold;">
-                            ${difference:,.2f} más en tu bolsillo
-                        </p>
-                        <p style="color: rgba(255, 255, 255, 0.8);">
-                            Esto es lo que ahorras en impuestos y lo que ganas por no estar atrapado en el sistema.
-                        </p>
-                    </div>
-                """, unsafe_allow_html=True)
-                
-                # Tabla detallada de compras
-                with st.expander("📋 Ver detalle de todas las compras"):
-                    df_purchases = pd.DataFrame(purchases)
-                    df_purchases['date'] = df_purchases['date'].astype(str)
-                    df_purchases.columns = ['Fecha', 'Precio BTC (USD)', 'Inversión (USD)', 'BTC Comprado']
-                    st.dataframe(df_purchases, use_container_width=True)
-                
-                # Informe comparativo
-                st.markdown("## 🎯 Opciones Como Ser Inconfiscable")
-                
-                st.markdown("""
-                    ### Vivir de tus Bitcoin sin venderlos
+                    col1, col2 = st.columns([2, 1])
                     
-                    Una vez que eres inconfiscable, tienes opciones que los atrapados en el sistema no tienen:
+                    with col1:
+                        email = st.text_input(
+                            "📧 Tu email",
+                            placeholder="tu@email.com"
+                        )
                     
-                    **Préstamo Pignorado**: Puedes usar tus Bitcoin como colateral para obtener un préstamo en USD o stablecoins, 
-                    sin necesidad de venderlos. Esto significa:
+                    with col2:
+                        name = st.text_input(
+                            "👤 Tu nombre (opcional)",
+                            placeholder="Tu nombre"
+                        )
                     
-                    - **Mantener tu exposición a Bitcoin**: Tus BTC siguen creciendo mientras usas el dinero del préstamo
-                    - **Vivir del préstamo**: Usa los fondos para tus gastos diarios
-                    - **Pagar intereses bajos**: Plataformas DeFi ofrecen tasas mucho menores que bancos tradicionales
-                    - **Sin confiscación**: Nadie puede quitarte tus Bitcoin porque están en tu autocustodia
-                    - **Privacidad total**: Tus transacciones no están vinculadas a tu identidad
-                    
-                    ### Comparación con el Escenario A (La Trampa)
-                    
-                    Si estuvieras atrapado en el sistema tradicional:
-                    
-                    - **Tendrías que vender** para acceder a tu dinero (pagando impuestos sobre ganancias)
-                    - **El Estado sabría** exactamente cuándo y cuánto vendiste
-                    - **Estarías vigilado** en cada transacción
-                    - **No tendrías privacidad** financiera real
-                    - **Tus fondos estarían en riesgo** de confiscación
-                    
-                    ### La Libertad Financiera Real
-                    
-                    Ser inconfiscable significa:
-                    
-                    - **Control total** sobre tus activos
-                    - **Privacidad financiera** completa
-                    - **Libertad** para hacer lo que quieras con tu dinero
-                    - **Protección** contra la confiscación y el control estatal
-                    - **Oportunidades** que el sistema tradicional nunca te dará
-                """)
-                
-                # Formulario de registro
-                st.markdown("---")
-                st.markdown("""
-                    <div style="background: linear-gradient(135deg, rgba(45, 106, 79, 0.2), rgba(6, 168, 125, 0.2)); padding: 40px; border-radius: 10px; border: 2px solid #06A77D;">
-                        <h2 style="color: #06A77D; text-align: center;">🔐 Comienza Tu Viaje Hacia Lo Inconfiscable</h2>
-                        <p style="text-align: center; color: rgba(255, 255, 255, 0.9); font-size: 1.1em;">
-                            Recibe una secuencia de correos explicándote los 4 pasos para hacerte verdaderamente inconfiscable.
-                        </p>
-                    </div>
-                """, unsafe_allow_html=True)
-                
-                col1, col2 = st.columns([2, 1])
-                
-                with col1:
-                    email = st.text_input(
-                        "📧 Tu email",
-                        placeholder="tu@email.com"
-                    )
-                
-                with col2:
-                    name = st.text_input(
-                        "👤 Tu nombre (opcional)",
-                        placeholder="Tu nombre"
-                    )
-                
-                if st.button("📬 Recibir la Secuencia de Correos", use_container_width=True):
-                    if email and "@" in email:
-                        st.success("✅ ¡Gracias! Revisa tu email para confirmar tu suscripción.")
-                        st.info("""
-                            Recibirás una secuencia de correos que te explicará:
-                            
-                            **Paso 1**: Configurar tu propio banco autocustodia
-                            **Paso 2**: Hacer tu primera compra de dinero onchain
-                            **Paso 3**: Romper la trazabilidad onchain, anonimizando tus fondos
-                            **Paso 4**: Comprar Bitcoin de manera recurrente sin KYC, de forma descentralizada
-                            
-                            Estos correos contienen el QUÉ, pero no el CÓMO. 
-                            Si quieres aprender el CÓMO en detalle, accede a la formación Inconfiscable.
-                        """)
-                    else:
-                        st.error("Por favor, ingresa un email válido")
+                    if st.button("📬 Recibir la Secuencia de Correos", use_container_width=True):
+                        if email and "@" in email:
+                            st.success("✅ ¡Gracias! Revisa tu email para confirmar tu suscripción.")
+                            st.info("""
+                                Recibirás una secuencia de correos que te explicará:
+                                
+                                **Paso 1**: Configurar tu propio banco autocustodia
+                                **Paso 2**: Hacer tu primera compra de dinero onchain
+                                **Paso 3**: Romper la trazabilidad onchain, anonimizando tus fondos
+                                **Paso 4**: Comprar Bitcoin de manera recurrente sin KYC, de forma descentralizada
+                                
+                                Estos correos contienen el QUÉ, pero no el CÓMO. 
+                                Si quieres aprender el CÓMO en detalle, accede a la formación Inconfiscable.
+                            """)
+                        else:
+                            st.error("❌ Por favor, ingresa un email válido")
+                else:
+                    st.error("❌ No se encontraron suficientes datos de compra para el período seleccionado. Intenta con un período más reciente o una cantidad diferente.")
             else:
-                st.error("No se encontraron datos de precios para el período seleccionado. Intenta con un período más reciente.")
-        else:
-            st.error("No se pudieron obtener los datos históricos de Bitcoin. Por favor, intenta más tarde.")
+                st.error("❌ No se pudieron obtener los datos históricos de Bitcoin. Por favor, intenta más tarde o con un período diferente.")
 
 # Footer
 st.markdown("""
