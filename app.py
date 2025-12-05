@@ -183,42 +183,55 @@ def get_bitcoin_prices(start_date: datetime, end_date: datetime) -> dict:
         # Convertir a diccionario {fecha: precio_cierre}
         prices = {}
         
-        # Manejo robusto de diferentes formatos de yfinance
         try:
-            # Intento 1: Acceso directo a columna 'Close' (formato simple)
+            # Método 1: Acceso directo a columna 'Close' (formato simple)
             if 'Close' in btc_data.columns:
                 for index, row in btc_data.iterrows():
-                    date = index.date()
-                    close_price = row['Close']
-                    if pd.notna(close_price) and close_price > 0:
-                        prices[date] = float(close_price)
+                    try:
+                        date = index.date()
+                        close_price = float(row['Close'])
+                        # Validar que el precio es válido
+                        if close_price > 0:
+                            prices[date] = close_price
+                    except (ValueError, TypeError):
+                        continue
             else:
-                # Intento 2: MultiIndex (formato reciente de yfinance)
-                for index, row in btc_data.iterrows():
-                    date = index.date()
-                    
-                    # Busca cualquier columna que contenga 'Close'
-                    close_value = None
-                    
-                    # Prueba con MultiIndex
-                    if isinstance(btc_data.columns, pd.MultiIndex):
-                        for col in btc_data.columns:
-                            if 'Close' in str(col):
-                                try:
-                                    close_value = btc_data.loc[index, col]
-                                    break
-                                except:
-                                    continue
-                    
-                    # Si no encontró en MultiIndex, prueba con columnas simples
-                    if close_value is None:
-                        close_cols = [col for col in btc_data.columns if 'Close' in str(col)]
-                        if close_cols:
-                            close_value = btc_data.loc[index, close_cols[0]]
-                    
-                    # Valida y guarda el precio
-                    if close_value is not None and pd.notna(close_value) and float(close_value) > 0:
-                        prices[date] = float(close_value)
+                # Método 2: MultiIndex (formato reciente de yfinance)
+                for index in btc_data.index:
+                    try:
+                        date = index.date()
+                        close_value = None
+                        
+                        # Busca la columna Close en MultiIndex
+                        if isinstance(btc_data.columns, pd.MultiIndex):
+                            # Busca cualquier columna que contenga 'Close'
+                            for col in btc_data.columns:
+                                if isinstance(col, tuple) and 'Close' in col:
+                                    try:
+                                        val = btc_data.loc[index, col]
+                                        if pd.notna(val):
+                                            close_value = float(val)
+                                            break
+                                    except:
+                                        continue
+                        
+                        # Si no encontró, busca en columnas simples
+                        if close_value is None:
+                            for col in btc_data.columns:
+                                if 'Close' in str(col):
+                                    try:
+                                        val = btc_data.loc[index, col]
+                                        if pd.notna(val):
+                                            close_value = float(val)
+                                            break
+                                    except:
+                                        continue
+                        
+                        # Guardar si es válido
+                        if close_value is not None and close_value > 0:
+                            prices[date] = close_value
+                    except Exception:
+                        continue
         
         except Exception as e:
             st.error(f"❌ Error al procesar datos de Bitcoin: {str(e)}")
@@ -457,7 +470,7 @@ if calculate_button:
                     bitcoin_prices
                 )
                 
-                if btc_accumulated > 0 and total_invested > 0:
+                if btc_accumulated > 0.0001 and total_invested > 0:
                     # Cálculos para Escenario A (La Trampa)
                     gross_value_a = btc_accumulated * future_price
                     taxes = gross_value_a * 0.25  # 25% de impuestos
