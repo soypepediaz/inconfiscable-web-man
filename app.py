@@ -2,8 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-import requests
-import json
+import yfinance as yf
 from typing import Tuple, List
 import math
 
@@ -169,22 +168,16 @@ st.markdown("""
 # Funciones de utilidad
 @st.cache_data
 def get_bitcoin_prices(start_date: datetime, end_date: datetime) -> dict:
-    """Obtiene histórico de precios de Bitcoin desde CoinGecko"""
+    """Obtiene histórico de precios de Bitcoin usando yfinance"""
     try:
-        url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart"
-        params = {
-            "vs_currency": "usd",
-            "days": (end_date - start_date).days + 1,
-            "interval": "daily"
-        }
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
+        # Descargar datos de Bitcoin usando yfinance
+        btc_data = yf.download('BTC-USD', start=start_date, end=end_date, progress=False)
         
+        # Convertir a diccionario {fecha: precio_cierre}
         prices = {}
-        for timestamp, price in data['prices']:
-            date = datetime.fromtimestamp(timestamp / 1000).date()
-            prices[date] = price
+        for index, row in btc_data.iterrows():
+            date = index.date()
+            prices[date] = row['Close']
         
         return prices
     except Exception as e:
@@ -395,9 +388,9 @@ calculate_button = st.button("🚀 Simular Mi Futuro Inconfiscable", use_contain
 
 if calculate_button:
     with st.spinner("Obteniendo datos históricos de Bitcoin..."):
-        # Obtener precios históricos
+        # Obtener precios históricos usando yfinance
         bitcoin_prices = get_bitcoin_prices(
-            datetime.combine(start_date, datetime.min.time()),
+            start_date,
             datetime.combine(future_date, datetime.min.time())
         )
         
@@ -573,7 +566,7 @@ if calculate_button:
                     else:
                         st.error("Por favor, ingresa un email válido")
             else:
-                st.error("No se encontraron datos de precios para el período seleccionado")
+                st.error("No se encontraron datos de precios para el período seleccionado. Intenta con un período más reciente.")
         else:
             st.error("No se pudieron obtener los datos históricos de Bitcoin. Por favor, intenta más tarde.")
 
